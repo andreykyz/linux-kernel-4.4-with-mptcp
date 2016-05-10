@@ -2281,7 +2281,7 @@ void tcp_send_loss_probe(struct sock *sk)
 	if (skb) {
 		if (tcp_snd_wnd_test(tp, skb, mss)) {
 			pcount = tp->packets_out;
-			tp->ops->tcp_write_xmit(sk, mss, TCP_NAGLE_OFF, 2, GFP_ATOMIC);
+			tp->ops->write_xmit(sk, mss, TCP_NAGLE_OFF, 2, GFP_ATOMIC);
 			if (tp->packets_out > pcount)
 				goto probe_sent;
 			goto rearm_timer;

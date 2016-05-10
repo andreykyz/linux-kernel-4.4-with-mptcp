@@ -57,6 +57,7 @@
 #include <linux/workqueue.h>
 #include <linux/atomic.h>
 #include <linux/sysctl.h>
+#include <linux/proc_fs.h>
 
 static struct kmem_cache *mptcp_sock_cache __read_mostly;
 static struct kmem_cache *mptcp_cb_cache __read_mostly;
