@@ -565,7 +565,7 @@ static int mptcp_fragment(struct sock *meta_sk, struct sk_buff *skb, u32 len,
 }
 
 /* Inspired by tcp_write_wakeup */
-int mptcp_write_wakeup(struct sock *meta_sk)
+int mptcp_write_wakeup(struct sock *meta_sk, int mib)
 {
 	struct tcp_sock *meta_tp = tcp_sk(meta_sk);
 	struct sk_buff *skb;
@@ -627,7 +627,7 @@ window_probe:
 			    meta_tp->snd_una + 0xFFFF)) {
 			mptcp_for_each_sk(meta_tp->mpcb, sk_it) {
 				if (mptcp_sk_can_send_ack(sk_it))
-					tcp_xmit_probe_skb(sk_it, 1);
+					tcp_xmit_probe_skb(sk_it, 1, LINUX_MIB_TCPWINPROBE);
 			}
 		}
 
@@ -638,7 +638,7 @@ window_probe:
 			if (!mptcp_sk_can_send_ack(sk_it))
 				continue;
 
-			ret = tcp_xmit_probe_skb(sk_it, 0);
+			ret = tcp_xmit_probe_skb(sk_it, 0, LINUX_MIB_TCPWINPROBE);
 			if (unlikely(ret > 0))
 				ans = ret;
 		}
