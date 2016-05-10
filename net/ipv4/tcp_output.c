@@ -1091,7 +1091,7 @@ void tcp_queue_skb(struct sock *sk, struct sk_buff *skb)
 
 /* Initialize TSO segments for a packet. */
 void tcp_set_skb_tso_segs(const struct sock *sk, struct sk_buff *skb,
-			  unsigned int mss_now)
+				 unsigned int mss_now)
 {
 
 	/* Make sure we own this skb before messing gso_size/gso_segs */
@@ -1238,8 +1238,8 @@ int tcp_fragment(struct sock *sk, struct sk_buff *skb, u32 len,
 	old_factor = tcp_skb_pcount(skb);
 
 	/* Fix up tso_factor for both original and new SKB.  */
-	tcp_set_skb_tso_segs(skb, mss_now);
-	tcp_set_skb_tso_segs(buff, mss_now);
+	tcp_set_skb_tso_segs(sk, skb, mss_now);
+	tcp_set_skb_tso_segs(sk, buff, mss_now);
 
 	/* If this packet has been sent out already, we must
 	 * adjust the various packet counters.
@@ -1319,7 +1319,7 @@ int tcp_trim_head(struct sock *sk, struct sk_buff *skb, u32 len)
 
 	/* Any change of skb->len requires recalculation of tso factor. */
 	if (tcp_skb_pcount(skb) > 1)
-		tcp_set_skb_tso_segs(skb, tcp_skb_mss(skb));
+		tcp_set_skb_tso_segs(sk, skb, tcp_skb_mss(skb));
 
 	return 0;
 }
@@ -1653,13 +1653,12 @@ unsigned int tcp_cwnd_test(const struct tcp_sock *tp,
  * This must be invoked the first time we consider transmitting
  * SKB onto the wire.
  */
-int tcp_init_tso_segs(const struct sock *sk, struct sk_buff *skb,
-		      unsigned int mss_now)
+int tcp_init_tso_segs(const struct sock *sk, struct sk_buff *skb, unsigned int mss_now)
 {
 	int tso_segs = tcp_skb_pcount(skb);
 
 	if (!tso_segs || (tso_segs > 1 && tcp_skb_mss(skb) != mss_now)) {
-		tcp_set_skb_tso_segs(skb, mss_now);
+		tcp_set_skb_tso_segs(sk, skb, mss_now);
 		tso_segs = tcp_skb_pcount(skb);
 	}
 	return tso_segs;
@@ -1714,7 +1713,7 @@ static unsigned int tcp_snd_test(const struct sock *sk, struct sk_buff *skb,
 	const struct tcp_sock *tp = tcp_sk(sk);
 	unsigned int cwnd_quota;
 
-	tcp_init_tso_segs(skb, cur_mss);
+	tcp_init_tso_segs(sk, skb, cur_mss);
 
 	if (!tcp_nagle_test(tp, skb, cur_mss, nonagle))
 		return 0;
@@ -1783,8 +1782,8 @@ static int tso_fragment(struct sock *sk, struct sk_buff *skb, unsigned int len,
 	tcp_fragment_tstamp(skb, buff);
 
 	/* Fix up tso_factor for both original and new SKB.  */
-	tcp_set_skb_tso_segs(skb, mss_now);
-	tcp_set_skb_tso_segs(buff, mss_now);
+	tcp_set_skb_tso_segs(sk, skb, mss_now);
+	tcp_set_skb_tso_segs(sk, buff, mss_now);
 
 	/* Link BUFF into the send queue. */
 	__skb_header_release(buff);
@@ -2018,7 +2017,7 @@ static int tcp_mtu_probe(struct sock *sk)
 								 skb->len, 0);
 			} else {
 				__pskb_trim_head(skb, copy);
-				tcp_set_skb_tso_segs(skb, mss_now);
+				tcp_set_skb_tso_segs(sk, skb, mss_now);
 			}
 			TCP_SKB_CB(skb)->seq += copy;
 		}
@@ -2028,7 +2027,7 @@ static int tcp_mtu_probe(struct sock *sk)
 		if (len >= probe_size)
 			break;
 	}
-	tcp_init_tso_segs(nskb, nskb->len);
+	tcp_init_tso_segs(sk, nskb, nskb->len);
 
 	/* We're ready to send.  If this fails, the probe will
 	 * be resegmented into mss-sized pieces by tcp_write_xmit().
@@ -2094,7 +2093,7 @@ bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 	while ((skb = tcp_send_head(sk))) {
 		unsigned int limit;
 
-		tso_segs = tcp_init_tso_segs(skb, mss_now);
+		tso_segs = tcp_init_tso_segs(sk, skb, mss_now);
 		BUG_ON(!tso_segs);
 
 		if (unlikely(tp->repair) && tp->repair_queue == TCP_SEND_QUEUE) {
@@ -2659,7 +2658,7 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 		if (unlikely(oldpcount > 1)) {
 			if (skb_unclone(skb, GFP_ATOMIC))
 				return -ENOMEM;
-			tcp_init_tso_segs(skb, cur_mss);
+			tcp_init_tso_segs(sk, skb, cur_mss);
 			tcp_adjust_pcount(sk, skb, oldpcount - tcp_skb_pcount(skb));
 		}
 	}
@@ -3527,7 +3526,7 @@ int tcp_write_wakeup(struct sock *sk, int mib)
 			if (tcp_fragment(sk, skb, seg_size, mss, GFP_ATOMIC))
 				return -1;
 		} else if (!tcp_skb_pcount(skb))
-			tcp_set_skb_tso_segs(skb, mss);
+			tcp_set_skb_tso_segs(sk, skb, mss);
 
 		TCP_SKB_CB(skb)->tcp_flags |= TCPHDR_PSH;
 		err = tcp_transmit_skb(sk, skb, 1, GFP_ATOMIC);
