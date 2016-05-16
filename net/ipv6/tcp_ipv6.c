@@ -1495,7 +1495,6 @@ process:
 	sk_incoming_cpu_update(sk);
 	skb->dev = NULL;
 
-<<<<<<< HEAD
 	if (mptcp(tcp_sk(sk))) {
 		meta_sk = mptcp_meta_sk(sk);
 
@@ -1507,10 +1506,7 @@ process:
 		bh_lock_sock_nested(sk);
 	}
 
-=======
-	bh_lock_sock_nested(sk);
 	tcp_sk(sk)->segs_in += max_t(u16, 1, skb_shinfo(skb)->gso_segs);
->>>>>>> v4.3
 	ret = 0;
 	if (!sock_owned_by_user(meta_sk)) {
 		if (!tcp_prequeue(meta_sk, skb))
@@ -1533,7 +1529,6 @@ no_tcp_socket:
 
 	tcp_v6_fill_cb(skb, hdr, th);
 
-<<<<<<< HEAD
 #ifdef CONFIG_MPTCP
 	if (!sk && th->syn && !th->ack) {
 		int ret = mptcp_lookup_join(skb, NULL);
@@ -1554,10 +1549,7 @@ no_tcp_socket:
 	}
 #endif
 
-	if (skb->len < (th->doff<<2) || tcp_checksum_complete(skb)) {
-=======
 	if (tcp_checksum_complete(skb)) {
->>>>>>> v4.3
 csum_error:
 		TCP_INC_STATS_BH(net, TCP_MIB_CSUMERRORS);
 bad_packet:

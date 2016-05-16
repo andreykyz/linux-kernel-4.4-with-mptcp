@@ -43,7 +43,6 @@ static __u16 const msstab[] = {
 	9000 - 60,
 };
 
-<<<<<<< HEAD
 static inline struct sock *get_cookie_sock(struct sock *sk, struct sk_buff *skb,
 					   struct request_sock *req,
 					   struct dst_entry *dst)
@@ -79,8 +78,6 @@ listen_overflow:
 	return child;
 }
 
-=======
->>>>>>> v4.3
 static DEFINE_PER_CPU(__u32 [16 + 5 + SHA_WORKSPACE_WORDS],
 		      ipv6_cookie_scratch);
 
@@ -303,7 +300,7 @@ struct sock *cookie_v6_check(struct sock *sk, struct sk_buff *skb)
 	ireq->rcv_wscale = rcv_wscale;
 	ireq->ecn_ok = cookie_ecn_ok(&tcp_opt, sock_net(sk), dst);
 
-	ret = tcp_get_cookie_sock(sk, skb, req, dst);
+	ret = get_cookie_sock(sk, skb, req, dst);
 out:
 	return ret;
 out_free:
