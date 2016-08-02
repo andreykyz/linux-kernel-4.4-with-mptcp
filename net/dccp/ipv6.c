@@ -656,11 +656,16 @@ static int dccp_v6_rcv(struct sk_buff *skb)
 	else
 		DCCP_SKB_CB(skb)->dccpd_ack_seq = dccp_hdr_ack_seq(skb);
 
-lookup:
+	/* Step 2:
+	 *	Look up flow ID in table and get corresponding socket */
 	sk = __inet6_lookup_skb(&dccp_hashinfo, skb,
 			        dh->dccph_sport, dh->dccph_dport,
 				inet6_iif(skb));
-	if (!sk) {
+	/*
+	 * Step 2:
+	 *	If no socket ...
+	 */
+	if (sk == NULL) {
 		dccp_pr_debug("failed to look up flow ID in table and "
 			      "get corresponding socket\n");
 		goto no_dccp_socket;
@@ -683,12 +688,8 @@ lookup:
 		struct sock *nsk = NULL;
 
 		sk = req->rsk_listener;
-		if (likely(sk->sk_state == DCCP_LISTEN)) {
+		if (sk->sk_state == DCCP_LISTEN)
 			nsk = dccp_check_req(sk, skb, req);
-		} else {
-			inet_csk_reqsk_queue_drop(sk, req);
-			goto lookup;
-		}
 		if (!nsk) {
 			reqsk_put(req);
 			goto discard_it;
