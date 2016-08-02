@@ -1955,8 +1955,6 @@ static inline void skb_set_hash_from_sk(struct sk_buff *skb, struct sock *sk)
 	}
 }
 
-void skb_set_owner_w(struct sk_buff *skb, struct sock *sk);
-
 /*
  *	Queue a received datagram if it will fit. Stream and sequenced
  *	protocols can't normally use this as they need to fit buffers in
@@ -1965,6 +1963,21 @@ void skb_set_owner_w(struct sk_buff *skb, struct sock *sk);
  *	Inlined as it's very short and called for pretty much every
  *	packet ever received.
  */
+
+static inline void skb_set_owner_w(struct sk_buff *skb, struct sock *sk)
+{
+	skb_orphan(skb);
+	skb->sk = sk;
+	skb->destructor = sock_wfree;
+	skb_set_hash_from_sk(skb, sk);
+	/*
+	 * We used to take a refcount on sk, but following operation
+	 * is enough to guarantee sk_free() wont free this sock until
+	 * all in-flight packets are completed
+	 */
+	atomic_add(skb->truesize, &sk->sk_wmem_alloc);
+}
+
 static inline void skb_set_owner_r(struct sk_buff *skb, struct sock *sk)
 {
 	skb_orphan(skb);
