@@ -967,9 +967,7 @@ drop:
 
 static struct sock *tcp_v6_syn_recv_sock(const struct sock *sk, struct sk_buff *skb,
 					 struct request_sock *req,
-					 struct dst_entry *dst,
-					 struct request_sock *req_unhash,
-					 bool *own_req)
+					 struct dst_entry *dst)
 {
 	struct inet_request_sock *ireq;
 	struct ipv6_pinfo *newnp;
@@ -989,8 +987,7 @@ static struct sock *tcp_v6_syn_recv_sock(const struct sock *sk, struct sk_buff *
 		 *	v6 mapped
 		 */
 
-		newsk = tcp_v4_syn_recv_sock(sk, skb, req, dst,
-					     req_unhash, own_req);
+		newsk = tcp_v4_syn_recv_sock(sk, skb, req, dst);
 
 		if (!newsk)
 			return NULL;
@@ -1153,7 +1150,7 @@ static struct sock *tcp_v6_syn_recv_sock(const struct sock *sk, struct sk_buff *
 		tcp_done(newsk);
 		goto out;
 	}
-	*own_req = inet_ehash_nolisten(newsk, req_to_sk(req_unhash));
+	__inet_hash(newsk, NULL);
 
 	return newsk;
 
