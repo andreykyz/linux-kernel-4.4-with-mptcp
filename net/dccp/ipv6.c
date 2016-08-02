@@ -202,9 +202,7 @@ static int dccp_v6_send_response(const struct sock *sk, struct request_sock *req
 	security_req_classify_flow(req, flowi6_to_flowi(&fl6));
 
 
-	rcu_read_lock();
-	final_p = fl6_update_dst(&fl6, rcu_dereference(np->opt), &final);
-	rcu_read_unlock();
+	final_p = fl6_update_dst(&fl6, np->opt, &final);
 
 	dst = ip6_dst_lookup_flow(sk, &fl6, final_p);
 	if (IS_ERR(dst)) {
@@ -221,10 +219,7 @@ static int dccp_v6_send_response(const struct sock *sk, struct request_sock *req
 							 &ireq->ir_v6_loc_addr,
 							 &ireq->ir_v6_rmt_addr);
 		fl6.daddr = ireq->ir_v6_rmt_addr;
-		rcu_read_lock();
-		err = ip6_xmit(sk, skb, &fl6, rcu_dereference(np->opt),
-			       np->tclass);
-		rcu_read_unlock();
+		err = ip6_xmit(sk, skb, &fl6, np->opt, np->tclass);
 		err = net_xmit_eval(err);
 	}
 
@@ -390,7 +385,6 @@ static struct sock *dccp_v6_request_recv_sock(const struct sock *sk,
 	struct inet_request_sock *ireq = inet_rsk(req);
 	struct ipv6_pinfo *newnp;
 	const struct ipv6_pinfo *np = inet6_sk(sk);
-	struct ipv6_txoptions *opt;
 	struct inet_sock *newinet;
 	struct dccp6_sock *newdp6;
 	struct sock *newsk;
@@ -499,15 +493,13 @@ static struct sock *dccp_v6_request_recv_sock(const struct sock *sk,
 	 * Yes, keeping reference count would be much more clever, but we make
 	 * one more one thing there: reattach optmem to newsk.
 	 */
-	opt = rcu_dereference(np->opt);
-	if (opt) {
-		opt = ipv6_dup_options(newsk, opt);
-		RCU_INIT_POINTER(newnp->opt, opt);
-	}
+	if (np->opt != NULL)
+		newnp->opt = ipv6_dup_options(newsk, np->opt);
+
 	inet_csk(newsk)->icsk_ext_hdr_len = 0;
-	if (opt)
-		inet_csk(newsk)->icsk_ext_hdr_len = opt->opt_nflen +
-						    opt->opt_flen;
+	if (newnp->opt != NULL)
+		inet_csk(newsk)->icsk_ext_hdr_len = (newnp->opt->opt_nflen +
+						     newnp->opt->opt_flen);
 
 	dccp_sync_mss(newsk, dst_mtu(dst));
 
@@ -762,7 +754,6 @@ static int dccp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 	struct ipv6_pinfo *np = inet6_sk(sk);
 	struct dccp_sock *dp = dccp_sk(sk);
 	struct in6_addr *saddr = NULL, *final_p, final;
-	struct ipv6_txoptions *opt;
 	struct flowi6 fl6;
 	struct dst_entry *dst;
 	int addr_type;
@@ -862,8 +853,7 @@ static int dccp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 	fl6.fl6_sport = inet->inet_sport;
 	security_sk_classify_flow(sk, flowi6_to_flowi(&fl6));
 
-	opt = rcu_dereference_protected(np->opt, sock_owned_by_user(sk));
-	final_p = fl6_update_dst(&fl6, opt, &final);
+	final_p = fl6_update_dst(&fl6, np->opt, &final);
 
 	dst = ip6_dst_lookup_flow(sk, &fl6, final_p);
 	if (IS_ERR(dst)) {
@@ -883,8 +873,9 @@ static int dccp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 	ip6_dst_store(sk, dst, NULL, NULL);
 
 	icsk->icsk_ext_hdr_len = 0;
-	if (opt)
-		icsk->icsk_ext_hdr_len = opt->opt_flen + opt->opt_nflen;
+	if (np->opt != NULL)
+		icsk->icsk_ext_hdr_len = (np->opt->opt_flen +
+					  np->opt->opt_nflen);
 
 	inet->inet_dport = usin->sin6_port;
 
