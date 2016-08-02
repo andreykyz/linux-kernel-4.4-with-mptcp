@@ -79,8 +79,7 @@ static inline struct sock *req_to_sk(struct request_sock *req)
 }
 
 static inline struct request_sock *
-reqsk_alloc(const struct request_sock_ops *ops, struct sock *sk_listener,
-	    bool attach_listener)
+reqsk_alloc(const struct request_sock_ops *ops, struct sock *sk_listener)
 {
 	struct request_sock *req;
 
@@ -88,15 +87,10 @@ reqsk_alloc(const struct request_sock_ops *ops, struct sock *sk_listener,
 
 	if (req) {
 		req->rsk_ops = ops;
-		if (attach_listener) {
-			sock_hold(sk_listener);
-			req->rsk_listener = sk_listener;
-		} else {
-			req->rsk_listener = NULL;
-		}
+		sock_hold(sk_listener);
+		req->rsk_listener = sk_listener;
 		req_to_sk(req)->sk_prot = sk_listener->sk_prot;
 		sk_node_init(&req_to_sk(req)->sk_node);
-		sk_tx_queue_clear(req_to_sk(req));
 		req->saved_syn = NULL;
 		/* Following is temporary. It is coupled with debugging
 		 * helpers in reqsk_put() & reqsk_free()
