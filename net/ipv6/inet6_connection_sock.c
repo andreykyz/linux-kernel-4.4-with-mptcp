@@ -67,16 +67,15 @@ EXPORT_SYMBOL_GPL(inet6_csk_bind_conflict);
 
 struct dst_entry *inet6_csk_route_req(const struct sock *sk,
 				      struct flowi6 *fl6,
-				      const struct request_sock *req,
-				      u8 proto)
+				      const struct request_sock *req)
 {
 	struct inet_request_sock *ireq = inet_rsk(req);
-	const struct ipv6_pinfo *np = inet6_sk(sk);
+	struct ipv6_pinfo *np = inet6_sk(sk);
 	struct in6_addr *final_p, final;
 	struct dst_entry *dst;
 
 	memset(fl6, 0, sizeof(*fl6));
-	fl6->flowi6_proto = proto;
+	fl6->flowi6_proto = IPPROTO_TCP;
 	fl6->daddr = ireq->ir_v6_rmt_addr;
 	final_p = fl6_update_dst(fl6, np->opt, &final);
 	fl6->saddr = ireq->ir_v6_loc_addr;
@@ -92,7 +91,6 @@ struct dst_entry *inet6_csk_route_req(const struct sock *sk,
 
 	return dst;
 }
-EXPORT_SYMBOL(inet6_csk_route_req);
 
 /*
  * request_sock (formerly open request) hash tables.

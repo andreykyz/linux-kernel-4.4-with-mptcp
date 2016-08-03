@@ -2261,6 +2261,13 @@ int tcp_disconnect(struct sock *sk, int flags)
 }
 EXPORT_SYMBOL(tcp_disconnect);
 
+void tcp_sock_destruct(struct sock *sk)
+{
+	inet_sock_destruct(sk);
+
+	kfree(inet_csk(sk)->icsk_accept_queue.fastopenq);
+}
+
 static inline bool tcp_can_repair_sock(const struct sock *sk)
 {
 	return ns_capable(sock_net(sk)->user_ns, CAP_NET_ADMIN) &&
@@ -2582,7 +2589,7 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 		    TCPF_LISTEN))) {
 			tcp_fastopen_init_key_once(true);
 
-			fastopen_queue_tune(sk, val);
+			err = fastopen_init_queue(sk, val);
 		} else {
 			err = -EINVAL;
 		}
@@ -2850,7 +2857,10 @@ static int do_tcp_getsockopt(struct sock *sk, int level,
 		break;
 
 	case TCP_FASTOPEN:
-		val = icsk->icsk_accept_queue.fastopenq.max_qlen;
+		if (icsk->icsk_accept_queue.fastopenq)
+			val = icsk->icsk_accept_queue.fastopenq->max_qlen;
+		else
+			val = 0;
 		break;
 
 	case TCP_TIMESTAMP:
