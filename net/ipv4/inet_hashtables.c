@@ -404,18 +404,14 @@ static u32 inet_sk_port_offset(const struct sock *sk)
 					  inet->inet_dport);
 }
 
-/* insert a socket into ehash, and eventually remove another one
- * (The another one can be a SYN_RECV or TIMEWAIT
- */
-int inet_ehash_insert(struct sock *sk, struct sock *osk)
+void __inet_hash_nolisten(struct sock *sk, struct sock *osk)
 {
 	struct inet_hashinfo *hashinfo = sk->sk_prot->h.hashinfo;
 	struct hlist_nulls_head *list;
 	struct inet_ehash_bucket *head;
 	spinlock_t *lock;
-	int ret = 0;
 
-	WARN_ON_ONCE(!sk_unhashed(sk));
+	WARN_ON(!sk_unhashed(sk));
 
 	sk->sk_hash = sk_ehashfn(sk);
 	head = inet_ehash_bucket(hashinfo, sk->sk_hash);
@@ -429,12 +425,6 @@ int inet_ehash_insert(struct sock *sk, struct sock *osk)
 		sk_nulls_del_node_init_rcu(osk);
 	}
 	spin_unlock(lock);
-	return ret;
-}
-
-void __inet_hash_nolisten(struct sock *sk, struct sock *osk)
-{
-	inet_ehash_insert(sk, osk);
 	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
 }
 EXPORT_SYMBOL_GPL(__inet_hash_nolisten);

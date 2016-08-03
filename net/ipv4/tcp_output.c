@@ -2941,8 +2941,7 @@ int tcp_send_synack(struct sock *sk)
  */
 struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 				struct request_sock *req,
-				struct tcp_fastopen_cookie *foc,
-				bool attach_req)
+				struct tcp_fastopen_cookie *foc)
 {
 	struct inet_request_sock *ireq = inet_rsk(req);
 	const struct tcp_sock *tp = tcp_sk(sk);
@@ -2954,7 +2953,11 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 	u16 user_mss;
 	int mss;
 
-	skb = alloc_skb(MAX_TCP_HEADER, GFP_ATOMIC);
+	/* sk is a const pointer, because we want to express multiple cpus
+	 * might call us concurrently.
+	 * sock_wmalloc() will change sk->sk_wmem_alloc in an atomic way.
+	 */
+	skb = sock_wmalloc((struct sock *)sk, MAX_TCP_HEADER, 1, GFP_ATOMIC);
 	if (unlikely(!skb)) {
 		dst_release(dst);
 		return NULL;
@@ -2962,17 +2965,6 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 	/* Reserve space for headers. */
 	skb_reserve(skb, MAX_TCP_HEADER);
 
-	if (attach_req) {
-		skb->destructor = sock_edemux;
-		sock_hold(req_to_sk(req));
-		skb->sk = req_to_sk(req);
-	} else {
-		/* sk is a const pointer, because we want to express multiple
-		 * cpu might call us concurrently.
-		 * sk->sk_wmem_alloc in an atomic, we can promote to rw.
-		 */
-		skb_set_owner_w(skb, (struct sock *)sk);
-	}
 	skb_dst_set(skb, dst);
 
 	mss = dst_metric_advmss(dst);
@@ -3513,7 +3505,7 @@ int tcp_rtx_synack(const struct sock *sk, struct request_sock *req)
 	int res;
 
 	tcp_rsk(req)->txhash = net_tx_rndhash();
-	res = af_ops->send_synack(sk, NULL, &fl, req, 0, NULL, true);
+	res = af_ops->send_synack(sk, NULL, &fl, req, 0, NULL);
 	if (!res) {
 		TCP_INC_STATS_BH(sock_net(sk), TCP_MIB_RETRANSSEGS);
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPSYNRETRANS);

@@ -68,16 +68,6 @@ struct request_sock {
 	u32				peer_secid;
 };
 
-static inline struct request_sock *inet_reqsk(struct sock *sk)
-{
-	return (struct request_sock *)sk;
-}
-
-static inline struct sock *req_to_sk(struct request_sock *req)
-{
-	return (struct sock *)req;
-}
-
 static inline struct request_sock *
 reqsk_alloc(const struct request_sock_ops *ops, struct sock *sk_listener)
 {
@@ -89,8 +79,6 @@ reqsk_alloc(const struct request_sock_ops *ops, struct sock *sk_listener)
 		req->rsk_ops = ops;
 		sock_hold(sk_listener);
 		req->rsk_listener = sk_listener;
-		req_to_sk(req)->sk_prot = sk_listener->sk_prot;
-		sk_node_init(&req_to_sk(req)->sk_node);
 		req->saved_syn = NULL;
 		/* Following is temporary. It is coupled with debugging
 		 * helpers in reqsk_put() & reqsk_free()
@@ -98,6 +86,16 @@ reqsk_alloc(const struct request_sock_ops *ops, struct sock *sk_listener)
 		atomic_set(&req->rsk_refcnt, 0);
 	}
 	return req;
+}
+
+static inline struct request_sock *inet_reqsk(struct sock *sk)
+{
+	return (struct request_sock *)sk;
+}
+
+static inline struct sock *req_to_sk(struct request_sock *req)
+{
+	return (struct sock *)req;
 }
 
 static inline void reqsk_free(struct request_sock *req)
@@ -119,6 +117,25 @@ static inline void reqsk_put(struct request_sock *req)
 }
 
 extern int sysctl_max_syn_backlog;
+
+/** struct listen_sock - listen state
+ *
+ * @max_qlen_log - log_2 of maximal queued SYNs/REQUESTs
+ */
+struct listen_sock {
+	int			qlen_inc; /* protected by listener lock */
+	int			young_inc;/* protected by listener lock */
+
+	/* following fields can be updated by timer */
+	atomic_t		qlen_dec; /* qlen = qlen_inc - qlen_dec */
+	atomic_t		young_dec;
+
+	u32			max_qlen_log ____cacheline_aligned_in_smp;
+	u32			synflood_warned;
+	u32			hash_rnd;
+	u32			nr_table_entries;
+	struct request_sock	*syn_table[0];
+};
 
 /*
  * For a TCP Fast Open listener -
@@ -153,29 +170,43 @@ struct fastopen_queue {
  * @rskq_accept_head - FIFO head of established children
  * @rskq_accept_tail - FIFO tail of established children
  * @rskq_defer_accept - User waits for some data after accept()
+ * @syn_wait_lock - serializer
+ *
+ * %syn_wait_lock is necessary only to avoid proc interface having to grab the main
+ * lock sock while browsing the listening hash (otherwise it's deadlock prone).
  *
  */
 struct request_sock_queue {
-	spinlock_t		rskq_lock;
-	u8			rskq_defer_accept;
-
-	u32			synflood_warned;
-	atomic_t		qlen;
-	atomic_t		young;
-
 	struct request_sock	*rskq_accept_head;
 	struct request_sock	*rskq_accept_tail;
+	u8			rskq_defer_accept;
+	struct listen_sock	*listen_opt;
 	struct fastopen_queue	fastopenq;  /* Check max_qlen != 0 to determine
 					     * if TFO is enabled.
 					     */
+
+	/* temporary alignment, our goal is to get rid of this lock */
+	spinlock_t		syn_wait_lock ____cacheline_aligned_in_smp;
 };
 
-void reqsk_queue_alloc(struct request_sock_queue *queue);
+int reqsk_queue_alloc(struct request_sock_queue *queue,
+		      unsigned int nr_table_entries);
 
+void __reqsk_queue_destroy(struct request_sock_queue *queue);
+void reqsk_queue_destroy(struct request_sock_queue *queue);
 void reqsk_fastopen_remove(struct sock *sk, struct request_sock *req,
 			   bool reset);
 
-static inline bool reqsk_queue_empty(const struct request_sock_queue *queue)
+static inline struct request_sock *
+	reqsk_queue_yank_acceptq(struct request_sock_queue *queue)
+{
+	struct request_sock *req = queue->rskq_accept_head;
+
+	queue->rskq_accept_head = NULL;
+	return req;
+}
+
+static inline int reqsk_queue_empty(struct request_sock_queue *queue)
 {
 	return queue->rskq_accept_head == NULL;
 }
@@ -185,7 +216,6 @@ static inline void reqsk_queue_add(struct request_sock_queue *queue,
 				   struct sock *parent,
 				   struct sock *child)
 {
-	spin_lock(&queue->rskq_lock);
 	req->sk = child;
 	sk_acceptq_added(parent);
 
@@ -196,48 +226,68 @@ static inline void reqsk_queue_add(struct request_sock_queue *queue,
 
 	queue->rskq_accept_tail = req;
 	req->dl_next = NULL;
-	spin_unlock(&queue->rskq_lock);
 }
 
-static inline struct request_sock *reqsk_queue_remove(struct request_sock_queue *queue,
-						      struct sock *parent)
+static inline struct request_sock *reqsk_queue_remove(struct request_sock_queue *queue)
 {
-	struct request_sock *req;
+	struct request_sock *req = queue->rskq_accept_head;
 
-	spin_lock_bh(&queue->rskq_lock);
-	req = queue->rskq_accept_head;
-	if (req) {
-		sk_acceptq_removed(parent);
-		queue->rskq_accept_head = req->dl_next;
-		if (queue->rskq_accept_head == NULL)
-			queue->rskq_accept_tail = NULL;
-	}
-	spin_unlock_bh(&queue->rskq_lock);
+	WARN_ON(req == NULL);
+
+	queue->rskq_accept_head = req->dl_next;
+	if (queue->rskq_accept_head == NULL)
+		queue->rskq_accept_tail = NULL;
+
 	return req;
 }
 
 static inline void reqsk_queue_removed(struct request_sock_queue *queue,
 				       const struct request_sock *req)
 {
+	struct listen_sock *lopt = queue->listen_opt;
+
 	if (req->num_timeout == 0)
-		atomic_dec(&queue->young);
-	atomic_dec(&queue->qlen);
+		atomic_inc(&lopt->young_dec);
+	atomic_inc(&lopt->qlen_dec);
 }
 
 static inline void reqsk_queue_added(struct request_sock_queue *queue)
 {
-	atomic_inc(&queue->young);
-	atomic_inc(&queue->qlen);
+	struct listen_sock *lopt = queue->listen_opt;
+
+	lopt->young_inc++;
+	lopt->qlen_inc++;
+}
+
+static inline int listen_sock_qlen(const struct listen_sock *lopt)
+{
+	return lopt->qlen_inc - atomic_read(&lopt->qlen_dec);
+}
+
+static inline int listen_sock_young(const struct listen_sock *lopt)
+{
+	return lopt->young_inc - atomic_read(&lopt->young_dec);
 }
 
 static inline int reqsk_queue_len(const struct request_sock_queue *queue)
 {
-	return atomic_read(&queue->qlen);
+	const struct listen_sock *lopt = queue->listen_opt;
+
+	return lopt ? listen_sock_qlen(lopt) : 0;
 }
 
 static inline int reqsk_queue_len_young(const struct request_sock_queue *queue)
 {
-	return atomic_read(&queue->young);
+	return listen_sock_young(queue->listen_opt);
 }
+
+static inline int reqsk_queue_is_full(const struct request_sock_queue *queue)
+{
+	return reqsk_queue_len(queue) >> queue->listen_opt->max_qlen_log;
+}
+
+void reqsk_queue_hash_req(struct request_sock_queue *queue,
+			  u32 hash, struct request_sock *req,
+			  unsigned long timeout);
 
 #endif /* _REQUEST_SOCK_H */
