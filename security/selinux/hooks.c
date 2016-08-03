@@ -4896,7 +4896,7 @@ static unsigned int selinux_ip_output(struct sk_buff *skb,
 	if (sk) {
 		struct sk_security_struct *sksec;
 
-		if (sk_listener(sk))
+		if (sk->sk_state == TCP_LISTEN)
 			/* if the socket is the listening state then this
 			 * packet is a SYN-ACK packet which means it needs to
 			 * be labeled based on the connection/request_sock and
@@ -5003,7 +5003,7 @@ static unsigned int selinux_ip_postroute(struct sk_buff *skb,
 	 *       unfortunately, this means more work, but it is only once per
 	 *       connection. */
 	if (skb_dst(skb) != NULL && skb_dst(skb)->xfrm != NULL &&
-	    !(sk && sk_listener(sk)))
+	    !(sk != NULL && sk->sk_state == TCP_LISTEN))
 		return NF_ACCEPT;
 #endif
 
@@ -5020,7 +5020,7 @@ static unsigned int selinux_ip_postroute(struct sk_buff *skb,
 			secmark_perm = PACKET__SEND;
 			peer_sid = SECINITSID_KERNEL;
 		}
-	} else if (sk_listener(sk)) {
+	} else if (sk->sk_state == TCP_LISTEN) {
 		/* Locally generated packet but the associated socket is in the
 		 * listening state which means this is a SYN-ACK packet.  In
 		 * this particular case the correct security label is assigned
@@ -5031,11 +5031,7 @@ static unsigned int selinux_ip_postroute(struct sk_buff *skb,
 		 * selinux_inet_conn_request().  See also selinux_ip_output()
 		 * for similar problems. */
 		u32 skb_sid;
-		struct sk_security_struct *sksec;
-
-		if (sk->sk_state == TCP_NEW_SYN_RECV)
-			sk = inet_reqsk(sk)->rsk_listener;
-		sksec = sk->sk_security;
+		struct sk_security_struct *sksec = sk->sk_security;
 		if (selinux_skb_peerlbl_sid(skb, family, &skb_sid))
 			return NF_DROP;
 		/* At this point, if the returned skb peerlbl is SECSID_NULL
