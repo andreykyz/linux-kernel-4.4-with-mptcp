@@ -124,7 +124,7 @@ static inline struct rtable *__ip_route_output_key(struct net *net,
 }
 
 struct rtable *ip_route_output_flow(struct net *, struct flowi4 *flp,
-				    const struct sock *sk);
+				    struct sock *sk);
 struct dst_entry *ipv4_blackhole_route(struct net *net,
 				       struct dst_entry *dst_orig);
 
