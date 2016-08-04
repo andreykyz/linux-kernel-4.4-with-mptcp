@@ -791,7 +791,7 @@ void inet_csk_prepare_forced_close(struct sock *sk)
 }
 EXPORT_SYMBOL(inet_csk_prepare_forced_close);
 
-int inet_csk_listen_start(struct sock *sk, int backlog)
+int inet_csk_listen_start(struct sock *sk, const int nr_table_entries)
 {
 	struct inet_sock *inet = inet_sk(sk);
 	struct inet_connection_sock *icsk = inet_csk(sk);
@@ -800,7 +800,7 @@ int inet_csk_listen_start(struct sock *sk, int backlog)
 	if (rc != 0)
 		return rc;
 
-	sk->sk_max_ack_backlog = backlog;
+	sk->sk_max_ack_backlog = 0;
 	sk->sk_ack_backlog = 0;
 	inet_csk_delack_init(sk);
 
