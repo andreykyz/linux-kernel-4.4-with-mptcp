@@ -312,7 +312,7 @@ static void do_redirect(struct sk_buff *skb, struct sock *sk)
 
 
 /* handle ICMP messages on TCP_NEW_SYN_RECV request sockets */
-void tcp_req_err(struct sock *sk, u32 seq, bool abort)
+void tcp_req_err(struct sock *sk, u32 seq)
 {
 	struct request_sock *req = inet_reqsk(sk);
 	struct net *net = sock_net(sk);
@@ -322,7 +322,7 @@ void tcp_req_err(struct sock *sk, u32 seq, bool abort)
 	 */
 	if (seq != tcp_rsk(req)->snt_isn) {
 		NET_INC_STATS_BH(net, LINUX_MIB_OUTOFWINDOWICMPS);
-	} else if (abort) {
+	} else {
 		/*
 		 * Still in SYN_RECV, just remove it silently.
 		 * There is no good way to pass the error to the newly
@@ -382,12 +382,7 @@ void tcp_v4_err(struct sk_buff *icmp_skb, u32 info)
 	}
 	seq = ntohl(th->seq);
 	if (sk->sk_state == TCP_NEW_SYN_RECV)
-		return tcp_req_err(sk, seq,
-				  type == ICMP_PARAMETERPROB ||
-				  type == ICMP_TIME_EXCEEDED ||
-				  (type == ICMP_DEST_UNREACH &&
-				   (code == ICMP_NET_UNREACH ||
-				    code == ICMP_HOST_UNREACH)));
+		return tcp_req_err(sk, seq);
 
 	bh_lock_sock(sk);
 	/* If too many ICMPs get dropped on busy
