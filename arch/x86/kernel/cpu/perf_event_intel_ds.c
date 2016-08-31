@@ -51,7 +51,8 @@ union intel_x86_pebs_dse {
 #define OP_LH (P(OP, LOAD) | P(LVL, HIT))
 #define SNOOP_NONE_MISS (P(SNOOP, NONE) | P(SNOOP, MISS))
 
-static const u64 pebs_data_source[] = {
+/* Version for Sandy Bridge and later */
+static u64 pebs_data_source[] = {
 	P(OP, LOAD) | P(LVL, MISS) | P(LVL, L3) | P(SNOOP, NA),/* 0x00:ukn L3 */
 	OP_LH | P(LVL, L1)  | P(SNOOP, NONE),	/* 0x01: L1 local */
 	OP_LH | P(LVL, LFB) | P(SNOOP, NONE),	/* 0x02: LFB hit */
@@ -69,6 +70,14 @@ static const u64 pebs_data_source[] = {
 	OP_LH | P(LVL, IO)  | P(SNOOP, NONE), /* 0x0e: I/O */
 	OP_LH | P(LVL, UNC) | P(SNOOP, NONE), /* 0x0f: uncached */
 };
+
+/* Patch up minor differences in the bits */
+void __init intel_pmu_pebs_data_source_nhm(void)
+{
+	pebs_data_source[0x05] = OP_LH | P(LVL, L3)  | P(SNOOP, HIT);
+	pebs_data_source[0x06] = OP_LH | P(LVL, L3)  | P(SNOOP, HITM);
+	pebs_data_source[0x07] = OP_LH | P(LVL, L3)  | P(SNOOP, HITM);
+}
 
 static u64 precise_store_data(u64 status)
 {
@@ -269,7 +278,7 @@ static int alloc_pebs_buffer(int cpu)
 	if (!x86_pmu.pebs)
 		return 0;
 
-	buffer = kzalloc_node(PEBS_BUFFER_SIZE, GFP_KERNEL, node);
+	buffer = kzalloc_node(x86_pmu.pebs_buffer_size, GFP_KERNEL, node);
 	if (unlikely(!buffer))
 		return -ENOMEM;
 
@@ -286,7 +295,7 @@ static int alloc_pebs_buffer(int cpu)
 		per_cpu(insn_buffer, cpu) = ibuffer;
 	}
 
-	max = PEBS_BUFFER_SIZE / x86_pmu.pebs_record_size;
+	max = x86_pmu.pebs_buffer_size / x86_pmu.pebs_record_size;
 
 	ds->pebs_buffer_base = (u64)(unsigned long)buffer;
 	ds->pebs_index = ds->pebs_buffer_base;
@@ -510,10 +519,11 @@ int intel_pmu_drain_bts_buffer(void)
 		u64	flags;
 	};
 	struct perf_event *event = cpuc->events[INTEL_PMC_IDX_FIXED_BTS];
-	struct bts_record *at, *top;
+	struct bts_record *at, *base, *top;
 	struct perf_output_handle handle;
 	struct perf_event_header header;
 	struct perf_sample_data data;
+	unsigned long skip = 0;
 	struct pt_regs regs;
 
 	if (!event)
@@ -522,10 +532,10 @@ int intel_pmu_drain_bts_buffer(void)
 	if (!x86_pmu.bts_active)
 		return 0;
 
-	at  = (struct bts_record *)(unsigned long)ds->bts_buffer_base;
-	top = (struct bts_record *)(unsigned long)ds->bts_index;
+	base = (struct bts_record *)(unsigned long)ds->bts_buffer_base;
+	top  = (struct bts_record *)(unsigned long)ds->bts_index;
 
-	if (top <= at)
+	if (top <= base)
 		return 0;
 
 	memset(&regs, 0, sizeof(regs));
@@ -535,16 +545,43 @@ int intel_pmu_drain_bts_buffer(void)
 	perf_sample_data_init(&data, 0, event->hw.last_period);
 
 	/*
+	 * BTS leaks kernel addresses in branches across the cpl boundary,
+	 * such as traps or system calls, so unless the user is asking for
+	 * kernel tracing (and right now it's not possible), we'd need to
+	 * filter them out. But first we need to count how many of those we
+	 * have in the current batch. This is an extra O(n) pass, however,
+	 * it's much faster than the other one especially considering that
+	 * n <= 2560 (BTS_BUFFER_SIZE / BTS_RECORD_SIZE * 15/16; see the
+	 * alloc_bts_buffer()).
+	 */
+	for (at = base; at < top; at++) {
+		/*
+		 * Note that right now *this* BTS code only works if
+		 * attr::exclude_kernel is set, but let's keep this extra
+		 * check here in case that changes.
+		 */
+		if (event->attr.exclude_kernel &&
+		    (kernel_ip(at->from) || kernel_ip(at->to)))
+			skip++;
+	}
+
+	/*
 	 * Prepare a generic sample, i.e. fill in the invariant fields.
 	 * We will overwrite the from and to address before we output
 	 * the sample.
 	 */
 	perf_prepare_sample(&header, &data, event, &regs);
 
-	if (perf_output_begin(&handle, event, header.size * (top - at)))
+	if (perf_output_begin(&handle, event, header.size *
+			      (top - base - skip)))
 		return 1;
 
-	for (; at < top; at++) {
+	for (at = base; at < top; at++) {
+		/* Filter out any records that contain kernel addresses. */
+		if (event->attr.exclude_kernel &&
+		    (kernel_ip(at->from) || kernel_ip(at->to)))
+			continue;
+
 		data.ip		= at->from;
 		data.addr	= at->to;
 
@@ -1268,6 +1305,7 @@ void __init intel_ds_init(void)
 
 	x86_pmu.bts  = boot_cpu_has(X86_FEATURE_BTS);
 	x86_pmu.pebs = boot_cpu_has(X86_FEATURE_PEBS);
+	x86_pmu.pebs_buffer_size = PEBS_BUFFER_SIZE;
 	if (x86_pmu.pebs) {
 		char pebs_type = x86_pmu.intel_cap.pebs_trap ?  '+' : '-';
 		int format = x86_pmu.intel_cap.pebs_format;
@@ -1276,6 +1314,14 @@ void __init intel_ds_init(void)
 		case 0:
 			printk(KERN_CONT "PEBS fmt0%c, ", pebs_type);
 			x86_pmu.pebs_record_size = sizeof(struct pebs_record_core);
+			/*
+			 * Using >PAGE_SIZE buffers makes the WRMSR to
+			 * PERF_GLOBAL_CTRL in intel_pmu_enable_all()
+			 * mysteriously hang on Core2.
+			 *
+			 * As a workaround, we don't do this.
+			 */
+			x86_pmu.pebs_buffer_size = PAGE_SIZE;
 			x86_pmu.drain_pebs = intel_pmu_drain_pebs_core;
 			break;
 

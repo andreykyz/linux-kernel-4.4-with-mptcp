@@ -3204,6 +3204,7 @@ xlog_recover_dquot_ra_pass2(
 	struct xfs_disk_dquot	*recddq;
 	struct xfs_dq_logformat	*dq_f;
 	uint			type;
+	int			len;
 
 
 	if (mp->m_qflags == 0)
@@ -3224,8 +3225,12 @@ xlog_recover_dquot_ra_pass2(
 	ASSERT(dq_f);
 	ASSERT(dq_f->qlf_len == 1);
 
-	xfs_buf_readahead(mp->m_ddev_targp, dq_f->qlf_blkno,
-			  XFS_FSB_TO_BB(mp, dq_f->qlf_len), NULL);
+	len = XFS_FSB_TO_BB(mp, dq_f->qlf_len);
+	if (xlog_peek_buffer_cancelled(log, dq_f->qlf_blkno, len, 0))
+		return;
+
+	xfs_buf_readahead(mp->m_ddev_targp, dq_f->qlf_blkno, len,
+			  &xfs_dquot_buf_ra_ops);
 }
 
 STATIC void
@@ -3431,7 +3436,7 @@ xlog_recover_add_to_cont_trans(
 	 * previous record. Copy the rest of the header.
 	 */
 	if (list_empty(&trans->r_itemq)) {
-		ASSERT(len < sizeof(struct xfs_trans_header));
+		ASSERT(len <= sizeof(struct xfs_trans_header));
 		if (len > sizeof(struct xfs_trans_header)) {
 			xfs_warn(log->l_mp, "%s: bad header length", __func__);
 			return -EIO;
@@ -4609,8 +4614,18 @@ xlog_recover(
 	int		error;
 
 	/* find the tail of the log */
-	if ((error = xlog_find_tail(log, &head_blk, &tail_blk)))
+	error = xlog_find_tail(log, &head_blk, &tail_blk);
+	if (error)
 		return error;
+
+	/*
+	 * The superblock was read before the log was available and thus the LSN
+	 * could not be verified. Check the superblock LSN against the current
+	 * LSN now that it's known.
+	 */
+	if (xfs_sb_version_hascrc(&log->l_mp->m_sb) &&
+	    !xfs_log_check_lsn(log->l_mp, log->l_mp->m_sb.sb_lsn))
+		return -EINVAL;
 
 	if (tail_blk != head_blk) {
 		/* There used to be a comment here:

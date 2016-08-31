@@ -112,6 +112,12 @@ struct atmel_uart_char {
 #define ATMEL_SERIAL_RINGSIZE 1024
 
 /*
+ * at91: 6 USARTs and one DBGU port (SAM9260)
+ * avr32: 4
+ */
+#define ATMEL_MAX_UART		7
+
+/*
  * We wrap our port structure around the generic uart_port.
  */
 struct atmel_uart_port {
@@ -269,6 +275,13 @@ static bool atmel_use_dma_rx(struct uart_port *port)
 	struct atmel_uart_port *atmel_port = to_atmel_uart_port(port);
 
 	return atmel_port->use_dma_rx;
+}
+
+static bool atmel_use_fifo(struct uart_port *port)
+{
+	struct atmel_uart_port *atmel_port = to_atmel_uart_port(port);
+
+	return atmel_port->fifo_size;
 }
 
 static unsigned int atmel_get_lines_status(struct uart_port *port)
@@ -921,7 +934,7 @@ static int atmel_prepare_tx_dma(struct uart_port *port)
 	sg_set_page(&atmel_port->sg_tx,
 			virt_to_page(port->state->xmit.buf),
 			UART_XMIT_SIZE,
-			(int)port->state->xmit.buf & ~PAGE_MASK);
+			(unsigned long)port->state->xmit.buf & ~PAGE_MASK);
 	nent = dma_map_sg(port->dev,
 				&atmel_port->sg_tx,
 				1,
@@ -931,10 +944,10 @@ static int atmel_prepare_tx_dma(struct uart_port *port)
 		dev_dbg(port->dev, "need to release resource of dma\n");
 		goto chan_err;
 	} else {
-		dev_dbg(port->dev, "%s: mapped %d@%p to %x\n", __func__,
+		dev_dbg(port->dev, "%s: mapped %d@%p to %pad\n", __func__,
 			sg_dma_len(&atmel_port->sg_tx),
 			port->state->xmit.buf,
-			sg_dma_address(&atmel_port->sg_tx));
+			&sg_dma_address(&atmel_port->sg_tx));
 	}
 
 	/* Configure the slave DMA */
@@ -1103,7 +1116,7 @@ static int atmel_prepare_rx_dma(struct uart_port *port)
 	sg_set_page(&atmel_port->sg_rx,
 		    virt_to_page(ring->buf),
 		    sizeof(struct atmel_uart_char) * ATMEL_SERIAL_RINGSIZE,
-		    (int)ring->buf & ~PAGE_MASK);
+		    (unsigned long)ring->buf & ~PAGE_MASK);
 	nent = dma_map_sg(port->dev,
 			  &atmel_port->sg_rx,
 			  1,
@@ -1113,10 +1126,10 @@ static int atmel_prepare_rx_dma(struct uart_port *port)
 		dev_dbg(port->dev, "need to release resource of dma\n");
 		goto chan_err;
 	} else {
-		dev_dbg(port->dev, "%s: mapped %d@%p to %x\n", __func__,
+		dev_dbg(port->dev, "%s: mapped %d@%p to %pad\n", __func__,
 			sg_dma_len(&atmel_port->sg_rx),
 			ring->buf,
-			sg_dma_address(&atmel_port->sg_rx));
+			&sg_dma_address(&atmel_port->sg_rx));
 	}
 
 	/* Configure the slave DMA */
@@ -1676,15 +1689,15 @@ static void atmel_init_rs485(struct uart_port *port,
 	struct atmel_uart_data *pdata = dev_get_platdata(&pdev->dev);
 
 	if (np) {
+		struct serial_rs485 *rs485conf = &port->rs485;
 		u32 rs485_delay[2];
 		/* rs485 properties */
 		if (of_property_read_u32_array(np, "rs485-rts-delay",
 					rs485_delay, 2) == 0) {
-			struct serial_rs485 *rs485conf = &port->rs485;
-
 			rs485conf->delay_rts_before_send = rs485_delay[0];
 			rs485conf->delay_rts_after_send = rs485_delay[1];
 			rs485conf->flags = 0;
+		}
 
 		if (of_get_property(np, "rs485-rx-during-tx", NULL))
 			rs485conf->flags |= SER_RS485_RX_DURING_TX;
@@ -1692,7 +1705,6 @@ static void atmel_init_rs485(struct uart_port *port,
 		if (of_get_property(np, "linux,rs485-enabled-at-boot-time",
 								NULL))
 			rs485conf->flags |= SER_RS485_ENABLED;
-		}
 	} else {
 		port->rs485       = pdata->rs485;
 	}
@@ -2164,7 +2176,12 @@ static void atmel_set_termios(struct uart_port *port, struct ktermios *termios,
 		mode |= ATMEL_US_USMODE_RS485;
 	} else if (termios->c_cflag & CRTSCTS) {
 		/* RS232 with hardware handshake (RTS/CTS) */
-		mode |= ATMEL_US_USMODE_HWHS;
+		if (atmel_use_dma_rx(port) && !atmel_use_fifo(port)) {
+			dev_info(port->dev, "not enabling hardware flow control because DMA is used");
+			termios->c_cflag &= ~CRTSCTS;
+		} else {
+			mode |= ATMEL_US_USMODE_HWHS;
+		}
 	} else {
 		/* RS232 without hadware handshake */
 		mode |= ATMEL_US_USMODE_NORMAL;
@@ -2296,7 +2313,7 @@ static int atmel_verify_port(struct uart_port *port, struct serial_struct *ser)
 		ret = -EINVAL;
 	if (port->uartclk / 16 != ser->baud_base)
 		ret = -EINVAL;
-	if ((void *)port->mapbase != ser->iomem_base)
+	if (port->mapbase != (unsigned long)ser->iomem_base)
 		ret = -EINVAL;
 	if (port->iobase != ser->port)
 		ret = -EINVAL;
@@ -2686,7 +2703,7 @@ static int atmel_init_gpios(struct atmel_uart_port *p, struct device *dev)
 	enum mctrl_gpio_idx i;
 	struct gpio_desc *gpiod;
 
-	p->gpios = mctrl_gpio_init(dev, 0);
+	p->gpios = mctrl_gpio_init_noauto(dev, 0);
 	if (IS_ERR(p->gpios))
 		return PTR_ERR(p->gpios);
 

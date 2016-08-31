@@ -139,9 +139,6 @@ static int __init pt_pmu_hw_init(void)
 	long i;
 
 	attrs = NULL;
-	ret = -ENODEV;
-	if (!test_cpu_cap(&boot_cpu_data, X86_FEATURE_INTEL_PT))
-		goto fail;
 
 	for (i = 0; i < PT_CPUID_LEAVES; i++) {
 		cpuid_count(20, i,
@@ -697,6 +694,7 @@ static int pt_buffer_reset_markers(struct pt_buffer *buf,
 
 	/* clear STOP and INT from current entry */
 	buf->topa_index[buf->stop_pos]->stop = 0;
+	buf->topa_index[buf->stop_pos]->intr = 0;
 	buf->topa_index[buf->intr_pos]->intr = 0;
 
 	/* how many pages till the STOP marker */
@@ -721,6 +719,7 @@ static int pt_buffer_reset_markers(struct pt_buffer *buf,
 	buf->intr_pos = idx;
 
 	buf->topa_index[buf->stop_pos]->stop = 1;
+	buf->topa_index[buf->stop_pos]->intr = 1;
 	buf->topa_index[buf->intr_pos]->intr = 1;
 
 	return 0;
@@ -1130,6 +1129,10 @@ static __init int pt_init(void)
 	int ret, cpu, prior_warn = 0;
 
 	BUILD_BUG_ON(sizeof(struct topa) > PAGE_SIZE);
+
+	if (!test_cpu_cap(&boot_cpu_data, X86_FEATURE_INTEL_PT))
+		return -ENODEV;
+
 	get_online_cpus();
 	for_each_online_cpu(cpu) {
 		u64 ctl;

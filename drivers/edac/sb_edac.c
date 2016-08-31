@@ -1117,8 +1117,8 @@ static void get_memory_layout(const struct mem_ctl_info *mci)
 		edac_dbg(0, "TAD#%d: up to %u.%03u GB (0x%016Lx), socket interleave %d, memory interleave %d, TGT: %d, %d, %d, %d, reg=0x%08x\n",
 			 n_tads, gb, (mb*1000)/1024,
 			 ((u64)tmp_mb) << 20L,
-			 (u32)TAD_SOCK(reg),
-			 (u32)TAD_CH(reg),
+			 (u32)(1 << TAD_SOCK(reg)),
+			 (u32)TAD_CH(reg) + 1,
 			 (u32)TAD_TGT0(reg),
 			 (u32)TAD_TGT1(reg),
 			 (u32)TAD_TGT2(reg),
@@ -1396,7 +1396,7 @@ static int get_memory_error_data(struct mem_ctl_info *mci,
 	}
 
 	ch_way = TAD_CH(reg) + 1;
-	sck_way = TAD_SOCK(reg) + 1;
+	sck_way = TAD_SOCK(reg);
 
 	if (ch_way == 3)
 		idx = addr >> 6;
@@ -1435,7 +1435,7 @@ static int get_memory_error_data(struct mem_ctl_info *mci,
 		switch(ch_way) {
 		case 2:
 		case 4:
-			sck_xch = 1 << sck_way * (ch_way >> 1);
+			sck_xch = (1 << sck_way) * (ch_way >> 1);
 			break;
 		default:
 			sprintf(msg, "Invalid mirror set. Can't decode addr");
@@ -1453,7 +1453,7 @@ static int get_memory_error_data(struct mem_ctl_info *mci,
 		 n_tads,
 		 addr,
 		 limit,
-		 (u32)TAD_SOCK(reg),
+		 sck_way,
 		 ch_way,
 		 offset,
 		 idx,
@@ -1468,18 +1468,12 @@ static int get_memory_error_data(struct mem_ctl_info *mci,
 			offset, addr);
 		return -EINVAL;
 	}
-	addr -= offset;
-	/* Store the low bits [0:6] of the addr */
-	ch_addr = addr & 0x7f;
-	/* Remove socket wayness and remove 6 bits */
-	addr >>= 6;
-	addr = div_u64(addr, sck_xch);
-#if 0
-	/* Divide by channel way */
-	addr = addr / ch_way;
-#endif
-	/* Recover the last 6 bits */
-	ch_addr |= addr << 6;
+
+	ch_addr = addr - offset;
+	ch_addr >>= (6 + shiftup);
+	ch_addr /= sck_xch;
+	ch_addr <<= (6 + shiftup);
+	ch_addr |= addr & ((1 << (6 + shiftup)) - 1);
 
 	/*
 	 * Step 3) Decode rank
@@ -1688,6 +1682,7 @@ static int sbridge_mci_bind_devs(struct mem_ctl_info *mci,
 {
 	struct sbridge_pvt *pvt = mci->pvt_info;
 	struct pci_dev *pdev;
+	u8 saw_chan_mask = 0;
 	int i;
 
 	for (i = 0; i < sbridge_dev->n_devs; i++) {
@@ -1721,6 +1716,7 @@ static int sbridge_mci_bind_devs(struct mem_ctl_info *mci,
 		{
 			int id = pdev->device - PCI_DEVICE_ID_INTEL_SBRIDGE_IMC_TAD0;
 			pvt->pci_tad[id] = pdev;
+			saw_chan_mask |= 1 << id;
 		}
 			break;
 		case PCI_DEVICE_ID_INTEL_SBRIDGE_IMC_DDRIO:
@@ -1741,10 +1737,8 @@ static int sbridge_mci_bind_devs(struct mem_ctl_info *mci,
 	    !pvt-> pci_tad || !pvt->pci_ras  || !pvt->pci_ta)
 		goto enodev;
 
-	for (i = 0; i < NUM_CHANNELS; i++) {
-		if (!pvt->pci_tad[i])
-			goto enodev;
-	}
+	if (saw_chan_mask != 0x0f)
+		goto enodev;
 	return 0;
 
 enodev:
@@ -2260,7 +2254,7 @@ static int sbridge_mce_check_error(struct notifier_block *nb, unsigned long val,
 
 	mci = get_mci_for_node_id(mce->socketid);
 	if (!mci)
-		return NOTIFY_BAD;
+		return NOTIFY_DONE;
 	pvt = mci->pvt_info;
 
 	/*

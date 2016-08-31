@@ -377,7 +377,7 @@ int nfs_readdir_xdr_filler(struct page **pages, nfs_readdir_descriptor_t *desc,
  again:
 	timestamp = jiffies;
 	gencount = nfs_inc_attr_generation_counter();
-	error = NFS_PROTO(inode)->readdir(file->f_path.dentry, cred, entry->cookie, pages,
+	error = NFS_PROTO(inode)->readdir(file_dentry(file), cred, entry->cookie, pages,
 					  NFS_SERVER(inode)->dtsize, desc->plus);
 	if (error < 0) {
 		/* We requested READDIRPLUS, but the server doesn't grok it */
@@ -560,7 +560,7 @@ int nfs_readdir_page_filler(nfs_readdir_descriptor_t *desc, struct nfs_entry *en
 		count++;
 
 		if (desc->plus != 0)
-			nfs_prime_dcache(desc->file->f_path.dentry, entry);
+			nfs_prime_dcache(file_dentry(desc->file), entry);
 
 		status = nfs_readdir_add_to_array(entry, page);
 		if (status != 0)
@@ -864,7 +864,7 @@ static bool nfs_dir_mapping_need_revalidate(struct inode *dir)
  */
 static int nfs_readdir(struct file *file, struct dir_context *ctx)
 {
-	struct dentry	*dentry = file->f_path.dentry;
+	struct dentry	*dentry = file_dentry(file);
 	struct inode	*inode = d_inode(dentry);
 	nfs_readdir_descriptor_t my_desc,
 			*desc = &my_desc;
@@ -1713,9 +1713,6 @@ nfs_mknod(struct inode *dir, struct dentry *dentry, umode_t mode, dev_t rdev)
 
 	dfprintk(VFS, "NFS: mknod(%s/%lu), %pd\n",
 			dir->i_sb->s_id, dir->i_ino, dentry);
-
-	if (!new_valid_dev(rdev))
-		return -EINVAL;
 
 	attr.ia_mode = mode;
 	attr.ia_valid = ATTR_MODE;

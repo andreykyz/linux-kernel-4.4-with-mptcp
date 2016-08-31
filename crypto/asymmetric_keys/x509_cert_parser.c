@@ -494,7 +494,7 @@ int x509_decode_time(time64_t *_t,  size_t hdrlen,
 		     unsigned char tag,
 		     const unsigned char *value, size_t vlen)
 {
-	static const unsigned char month_lengths[] = { 31, 29, 31, 30, 31, 30,
+	static const unsigned char month_lengths[] = { 31, 28, 31, 30, 31, 30,
 						       31, 31, 30, 31, 30, 31 };
 	const unsigned char *p = value;
 	unsigned year, mon, day, hour, min, sec, mon_len;
@@ -531,26 +531,28 @@ int x509_decode_time(time64_t *_t,  size_t hdrlen,
 	if (*p != 'Z')
 		goto unsupported_time;
 
-	mon_len = month_lengths[mon];
+	if (year < 1970 ||
+	    mon < 1 || mon > 12)
+		goto invalid_time;
+
+	mon_len = month_lengths[mon - 1];
 	if (mon == 2) {
 		if (year % 4 == 0) {
 			mon_len = 29;
 			if (year % 100 == 0) {
-				year /= 100;
-				if (year % 4 != 0)
-					mon_len = 28;
+				mon_len = 28;
+				if (year % 400 == 0)
+					mon_len = 29;
 			}
 		}
 	}
 
-	if (year < 1970 ||
-	    mon < 1 || mon > 12 ||
-	    day < 1 || day > mon_len ||
-	    hour < 0 || hour > 23 ||
-	    min < 0 || min > 59 ||
-	    sec < 0 || sec > 59)
+	if (day < 1 || day > mon_len ||
+	    hour > 23 ||
+	    min > 59 ||
+	    sec > 59)
 		goto invalid_time;
-	
+
 	*_t = mktime64(year, mon, day, hour, min, sec);
 	return 0;
 

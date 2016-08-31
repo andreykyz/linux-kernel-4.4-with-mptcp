@@ -255,9 +255,18 @@ struct futex_hash_bucket {
 	struct plist_head chain;
 } ____cacheline_aligned_in_smp;
 
-static unsigned long __read_mostly futex_hashsize;
+/*
+ * The base of the bucket array and its size are always used together
+ * (after initialization only in hash_futex()), so ensure that they
+ * reside in the same cacheline.
+ */
+static struct {
+	struct futex_hash_bucket *queues;
+	unsigned long            hashsize;
+} __futex_data __read_mostly __aligned(2*sizeof(long));
+#define futex_queues   (__futex_data.queues)
+#define futex_hashsize (__futex_data.hashsize)
 
-static struct futex_hash_bucket *futex_queues;
 
 /*
  * Fault injections for futexes.
@@ -267,10 +276,10 @@ static struct futex_hash_bucket *futex_queues;
 static struct {
 	struct fault_attr attr;
 
-	u32 ignore_private;
+	bool ignore_private;
 } fail_futex = {
 	.attr = FAULT_ATTR_INITIALIZER,
-	.ignore_private = 0,
+	.ignore_private = false,
 };
 
 static int __init setup_fail_futex(char *str)
@@ -1235,10 +1244,20 @@ static int wake_futex_pi(u32 __user *uaddr, u32 uval, struct futex_q *this,
 	if (unlikely(should_fail_futex(true)))
 		ret = -EFAULT;
 
-	if (cmpxchg_futex_value_locked(&curval, uaddr, uval, newval))
+	if (cmpxchg_futex_value_locked(&curval, uaddr, uval, newval)) {
 		ret = -EFAULT;
-	else if (curval != uval)
-		ret = -EINVAL;
+	} else if (curval != uval) {
+		/*
+		 * If a unconditional UNLOCK_PI operation (user space did not
+		 * try the TID->0 transition) raced with a waiter setting the
+		 * FUTEX_WAITERS flag between get_user() and locking the hash
+		 * bucket lock, retry the operation.
+		 */
+		if ((FUTEX_TID_MASK & curval) == uval)
+			ret = -EAGAIN;
+		else
+			ret = -EINVAL;
+	}
 	if (ret) {
 		raw_spin_unlock(&pi_state->pi_mutex.wait_lock);
 		return ret;
@@ -1465,8 +1484,8 @@ void requeue_futex(struct futex_q *q, struct futex_hash_bucket *hb1,
 	if (likely(&hb1->chain != &hb2->chain)) {
 		plist_del(&q->list, &hb1->chain);
 		hb_waiters_dec(hb1);
-		plist_add(&q->list, &hb2->chain);
 		hb_waiters_inc(hb2);
+		plist_add(&q->list, &hb2->chain);
 		q->lock_ptr = &hb2->lock;
 	}
 	get_futex_key_refs(key2);
@@ -2529,6 +2548,15 @@ retry:
 		if (ret == -EFAULT)
 			goto pi_faulted;
 		/*
+		 * A unconditional UNLOCK_PI op raced against a waiter
+		 * setting the FUTEX_WAITERS bit. Try again.
+		 */
+		if (ret == -EAGAIN) {
+			spin_unlock(&hb->lock);
+			put_futex_key(&key);
+			goto retry;
+		}
+		/*
 		 * wake_futex_pi has detected invalid state. Tell user
 		 * space.
 		 */
@@ -2746,6 +2774,11 @@ static int futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,
 		if (q.pi_state && (q.pi_state->owner != current)) {
 			spin_lock(q.lock_ptr);
 			ret = fixup_pi_state_owner(uaddr2, &q, current);
+			/*
+			 * Drop the reference to the pi state which
+			 * the requeue_pi() code acquired for us.
+			 */
+			free_pi_state(q.pi_state);
 			spin_unlock(q.lock_ptr);
 		}
 	} else {
@@ -2872,7 +2905,7 @@ SYSCALL_DEFINE3(get_robust_list, int, pid,
 	}
 
 	ret = -EPERM;
-	if (!ptrace_may_access(p, PTRACE_MODE_READ))
+	if (!ptrace_may_access(p, PTRACE_MODE_READ_REALCREDS))
 		goto err_unlock;
 
 	head = p->robust_list;

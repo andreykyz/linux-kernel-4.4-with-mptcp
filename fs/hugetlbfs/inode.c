@@ -332,12 +332,17 @@ static void remove_huge_page(struct page *page)
  * truncation is indicated by end of range being LLONG_MAX
  *	In this case, we first scan the range and release found pages.
  *	After releasing pages, hugetlb_unreserve_pages cleans up region/reserv
- *	maps and global counts.
+ *	maps and global counts.  Page faults can not race with truncation
+ *	in this routine.  hugetlb_no_page() prevents page faults in the
+ *	truncated range.  It checks i_size before allocation, and again after
+ *	with the page table lock for the page held.  The same lock must be
+ *	acquired to unmap a page.
  * hole punch is indicated if end is not LLONG_MAX
  *	In the hole punch case we scan the range and release found pages.
  *	Only when releasing a page is the associated region/reserv map
  *	deleted.  The region/reserv map for ranges without associated
- *	pages are not modified.
+ *	pages are not modified.  Page faults can race with hole punch.
+ *	This is indicated if we find a mapped page.
  * Note: If the passed end of range value is beyond the end of file, but
  * not LLONG_MAX this routine still performs a hole punch operation.
  */
@@ -361,26 +366,29 @@ static void remove_inode_hugepages(struct inode *inode, loff_t lstart,
 	next = start;
 	while (next < end) {
 		/*
-		 * Make sure to never grab more pages that we
-		 * might possibly need.
+		 * Don't grab more pages than the number left in the range.
 		 */
 		if (end - next < lookup_nr)
 			lookup_nr = end - next;
 
 		/*
-		 * This pagevec_lookup() may return pages past 'end',
-		 * so we must check for page->index > end.
+		 * When no more pages are found, we are done.
 		 */
-		if (!pagevec_lookup(&pvec, mapping, next, lookup_nr)) {
-			if (next == start)
-				break;
-			next = start;
-			continue;
-		}
+		if (!pagevec_lookup(&pvec, mapping, next, lookup_nr))
+			break;
 
 		for (i = 0; i < pagevec_count(&pvec); ++i) {
 			struct page *page = pvec.pages[i];
 			u32 hash;
+
+			/*
+			 * The page (index) could be beyond end.  This is
+			 * only possible in the punch hole case as end is
+			 * max page offset in the truncate case.
+			 */
+			next = page->index;
+			if (next >= end)
+				break;
 
 			hash = hugetlb_fault_mutex_hash(h, current->mm,
 							&pseudo_vma,
@@ -388,19 +396,7 @@ static void remove_inode_hugepages(struct inode *inode, loff_t lstart,
 			mutex_lock(&hugetlb_fault_mutex_table[hash]);
 
 			lock_page(page);
-			if (page->index >= end) {
-				unlock_page(page);
-				mutex_unlock(&hugetlb_fault_mutex_table[hash]);
-				next = end;	/* we are done */
-				break;
-			}
-
-			/*
-			 * If page is mapped, it was faulted in after being
-			 * unmapped.  Do nothing in this race case.  In the
-			 * normal case page is not mapped.
-			 */
-			if (!page_mapped(page)) {
+			if (likely(!page_mapped(page))) {
 				bool rsv_on_error = !PagePrivate(page);
 				/*
 				 * We must free the huge page and remove
@@ -421,17 +417,23 @@ static void remove_inode_hugepages(struct inode *inode, loff_t lstart,
 						hugetlb_fix_reserve_counts(
 							inode, rsv_on_error);
 				}
+			} else {
+				/*
+				 * If page is mapped, it was faulted in after
+				 * being unmapped.  It indicates a race between
+				 * hole punch and page fault.  Do nothing in
+				 * this case.  Getting here in a truncate
+				 * operation is a bug.
+				 */
+				BUG_ON(truncate_op);
 			}
 
-			if (page->index > next)
-				next = page->index;
-
-			++next;
 			unlock_page(page);
-
 			mutex_unlock(&hugetlb_fault_mutex_table[hash]);
 		}
+		++next;
 		huge_pagevec_release(&pvec);
+		cond_resched();
 	}
 
 	if (truncate_op)
@@ -461,6 +463,7 @@ hugetlb_vmdelete_list(struct rb_root *root, pgoff_t start, pgoff_t end)
 	 */
 	vma_interval_tree_foreach(vma, root, start, end ? end : ULONG_MAX) {
 		unsigned long v_offset;
+		unsigned long v_end;
 
 		/*
 		 * Can the expression below overflow on 32-bit arches?
@@ -473,15 +476,17 @@ hugetlb_vmdelete_list(struct rb_root *root, pgoff_t start, pgoff_t end)
 		else
 			v_offset = 0;
 
-		if (end) {
-			end = ((end - start) << PAGE_SHIFT) +
-			       vma->vm_start + v_offset;
-			if (end > vma->vm_end)
-				end = vma->vm_end;
-		} else
-			end = vma->vm_end;
+		if (!end)
+			v_end = vma->vm_end;
+		else {
+			v_end = ((end - vma->vm_pgoff) << PAGE_SHIFT)
+							+ vma->vm_start;
+			if (v_end > vma->vm_end)
+				v_end = vma->vm_end;
+		}
 
-		unmap_hugepage_range(vma, vma->vm_start + v_offset, end, NULL);
+		unmap_hugepage_range(vma, vma->vm_start + v_offset, v_end,
+									NULL);
 	}
 }
 
@@ -647,9 +652,6 @@ static long hugetlbfs_fallocate(struct file *file, int mode, loff_t offset,
 	if (!(mode & FALLOC_FL_KEEP_SIZE) && offset + len > inode->i_size)
 		i_size_write(inode, offset + len);
 	inode->i_ctime = CURRENT_TIME;
-	spin_lock(&inode->i_lock);
-	inode->i_private = NULL;
-	spin_unlock(&inode->i_lock);
 out:
 	mutex_unlock(&inode->i_mutex);
 	return error;

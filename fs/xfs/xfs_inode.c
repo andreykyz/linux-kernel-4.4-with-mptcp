@@ -2365,6 +2365,7 @@ retry:
 
 			iip->ili_last_fields = iip->ili_fields;
 			iip->ili_fields = 0;
+			iip->ili_fsync_fields = 0;
 			iip->ili_logged = 1;
 			xfs_trans_ail_copy_lsn(mp->m_ail, &iip->ili_flush_lsn,
 						&iip->ili_item.li_lsn);
@@ -3219,13 +3220,14 @@ xfs_iflush_cluster(
 		 * We need to check under the i_flags_lock for a valid inode
 		 * here. Skip it if it is not valid or the wrong inode.
 		 */
-		spin_lock(&ip->i_flags_lock);
-		if (!ip->i_ino ||
+		spin_lock(&iq->i_flags_lock);
+		if (!iq->i_ino ||
+		    __xfs_iflags_test(iq, XFS_ISTALE) ||
 		    (XFS_INO_TO_AGINO(mp, iq->i_ino) & mask) != first_index) {
-			spin_unlock(&ip->i_flags_lock);
+			spin_unlock(&iq->i_flags_lock);
 			continue;
 		}
-		spin_unlock(&ip->i_flags_lock);
+		spin_unlock(&iq->i_flags_lock);
 
 		/*
 		 * Do an un-protected check to see if the inode is dirty and
@@ -3271,8 +3273,8 @@ xfs_iflush_cluster(
 	}
 
 	if (clcount) {
-		XFS_STATS_INC(xs_icluster_flushcnt);
-		XFS_STATS_ADD(xs_icluster_flushinode, clcount);
+		XFS_STATS_INC(mp, xs_icluster_flushcnt);
+		XFS_STATS_ADD(mp, xs_icluster_flushinode, clcount);
 	}
 
 out_free:
@@ -3341,11 +3343,11 @@ xfs_iflush(
 	struct xfs_buf		**bpp)
 {
 	struct xfs_mount	*mp = ip->i_mount;
-	struct xfs_buf		*bp;
+	struct xfs_buf		*bp = NULL;
 	struct xfs_dinode	*dip;
 	int			error;
 
-	XFS_STATS_INC(xs_iflush_count);
+	XFS_STATS_INC(mp, xs_iflush_count);
 
 	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL|XFS_ILOCK_SHARED));
 	ASSERT(xfs_isiflocked(ip));
@@ -3383,14 +3385,22 @@ xfs_iflush(
 	}
 
 	/*
-	 * Get the buffer containing the on-disk inode.
+	 * Get the buffer containing the on-disk inode. We are doing a try-lock
+	 * operation here, so we may get  an EAGAIN error. In that case, we
+	 * simply want to return with the inode still dirty.
+	 *
+	 * If we get any other error, we effectively have a corruption situation
+	 * and we cannot flush the inode, so we treat it the same as failing
+	 * xfs_iflush_int().
 	 */
 	error = xfs_imap_to_bp(mp, NULL, &ip->i_imap, &dip, &bp, XBF_TRYLOCK,
 			       0);
-	if (error || !bp) {
+	if (error == -EAGAIN) {
 		xfs_ifunlock(ip);
 		return error;
 	}
+	if (error)
+		goto corrupt_out;
 
 	/*
 	 * First flush out the inode that xfs_iflush was called with.
@@ -3418,7 +3428,8 @@ xfs_iflush(
 	return 0;
 
 corrupt_out:
-	xfs_buf_relse(bp);
+	if (bp)
+		xfs_buf_relse(bp);
 	xfs_force_shutdown(mp, SHUTDOWN_CORRUPT_INCORE);
 cluster_corrupt_out:
 	error = -EFSCORRUPTED;
@@ -3560,6 +3571,7 @@ xfs_iflush_int(
 	 */
 	iip->ili_last_fields = iip->ili_fields;
 	iip->ili_fields = 0;
+	iip->ili_fsync_fields = 0;
 	iip->ili_logged = 1;
 
 	xfs_trans_ail_copy_lsn(mp->m_ail, &iip->ili_flush_lsn,

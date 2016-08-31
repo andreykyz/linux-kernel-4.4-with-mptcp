@@ -109,8 +109,8 @@ static enum ib_wc_opcode get_umr_comp(struct mlx5_ib_wq *wq, int idx)
 	case IB_WR_LOCAL_INV:
 		return IB_WC_LOCAL_INV;
 
-	case IB_WR_FAST_REG_MR:
-		return IB_WC_FAST_REG_MR;
+	case IB_WR_REG_MR:
+		return IB_WC_REG_MR;
 
 	default:
 		pr_warn("unknown completion status\n");
@@ -756,7 +756,7 @@ struct ib_cq *mlx5_ib_create_cq(struct ib_device *ibdev,
 	int uninitialized_var(index);
 	int uninitialized_var(inlen);
 	int cqe_size;
-	int irqn;
+	unsigned int irqn;
 	int eqn;
 	int err;
 

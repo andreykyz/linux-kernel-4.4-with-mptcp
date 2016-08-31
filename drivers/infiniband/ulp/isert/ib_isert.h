@@ -50,6 +50,7 @@ enum iser_ib_op_code {
 enum iser_conn_state {
 	ISER_CONN_INIT,
 	ISER_CONN_UP,
+	ISER_CONN_BOUND,
 	ISER_CONN_FULL_FEATURE,
 	ISER_CONN_TERMINATING,
 	ISER_CONN_DOWN,
@@ -84,14 +85,12 @@ enum isert_indicator {
 
 struct pi_context {
 	struct ib_mr		       *prot_mr;
-	struct ib_fast_reg_page_list   *prot_frpl;
 	struct ib_mr		       *sig_mr;
 };
 
 struct fast_reg_descriptor {
 	struct list_head		list;
 	struct ib_mr		       *data_mr;
-	struct ib_fast_reg_page_list   *data_frpl;
 	u8				ind;
 	struct pi_context	       *pi_ctx;
 };
@@ -117,9 +116,9 @@ struct isert_rdma_wr {
 	enum iser_ib_op_code	iser_ib_op;
 	struct ib_sge		*ib_sge;
 	struct ib_sge		s_ib_sge;
-	int			send_wr_num;
-	struct ib_send_wr	*send_wr;
-	struct ib_send_wr	s_send_wr;
+	int			rdma_wr_num;
+	struct ib_rdma_wr	*rdma_wr;
+	struct ib_rdma_wr	s_rdma_wr;
 	struct ib_sge		ib_sg[3];
 	struct isert_data_buf	data;
 	struct isert_data_buf	prot;
@@ -146,7 +145,6 @@ struct isert_device;
 
 struct isert_conn {
 	enum iser_conn_state	state;
-	int			post_recv_buf_count;
 	u32			responder_resources;
 	u32			initiator_depth;
 	bool			pi_support;

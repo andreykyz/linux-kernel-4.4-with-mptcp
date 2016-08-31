@@ -1123,23 +1123,26 @@ config X86_REBOOTFIXUPS
 	  Say N otherwise.
 
 config MICROCODE
-	tristate "CPU microcode loading support"
+	bool "CPU microcode loading support"
+	default y
 	depends on CPU_SUP_AMD || CPU_SUP_INTEL
 	select FW_LOADER
 	---help---
-
 	  If you say Y here, you will be able to update the microcode on
-	  certain Intel and AMD processors. The Intel support is for the
-	  IA32 family, e.g. Pentium Pro, Pentium II, Pentium III, Pentium 4,
-	  Xeon etc. The AMD support is for families 0x10 and later. You will
-	  obviously need the actual microcode binary data itself which is not
-	  shipped with the Linux kernel.
+	  Intel and AMD processors. The Intel support is for the IA32 family,
+	  e.g. Pentium Pro, Pentium II, Pentium III, Pentium 4, Xeon etc. The
+	  AMD support is for families 0x10 and later. You will obviously need
+	  the actual microcode binary data itself which is not shipped with
+	  the Linux kernel.
 
-	  This option selects the general module only, you need to select
-	  at least one vendor specific module as well.
+	  The preferred method to load microcode from a detached initrd is described
+	  in Documentation/x86/early-microcode.txt. For that you need to enable
+	  CONFIG_BLK_DEV_INITRD in order for the loader to be able to scan the
+	  initrd for microcode blobs.
 
-	  To compile this driver as a module, choose M here: the module
-	  will be called microcode.
+	  In addition, you can build-in the microcode into the kernel. For that you
+	  need to enable FIRMWARE_IN_KERNEL and add the vendor-supplied microcode
+	  to the CONFIG_EXTRA_FIRMWARE config option.
 
 config MICROCODE_INTEL
 	bool "Intel microcode loading support"
@@ -1165,24 +1168,6 @@ config MICROCODE_AMD
 config MICROCODE_OLD_INTERFACE
 	def_bool y
 	depends on MICROCODE
-
-config MICROCODE_INTEL_EARLY
-	bool
-
-config MICROCODE_AMD_EARLY
-	bool
-
-config MICROCODE_EARLY
-	bool "Early load microcode"
-	depends on MICROCODE=y && BLK_DEV_INITRD
-	select MICROCODE_INTEL_EARLY if MICROCODE_INTEL
-	select MICROCODE_AMD_EARLY if MICROCODE_AMD
-	default y
-	help
-	  This option provides functionality to read additional microcode data
-	  at the beginning of initrd image. The data tells kernel to load
-	  microcode to CPU's as early as possible. No functional change if no
-	  microcode data is glued to the initrd, therefore it's safe to say Y.
 
 config X86_MSR
 	tristate "/dev/cpu/*/msr - Model-specific register support"
@@ -2042,6 +2027,55 @@ config COMPAT_VDSO
 
 	  If unsure, say N: if you are compiling your own kernel, you
 	  are unlikely to be using a buggy version of glibc.
+
+choice
+	prompt "vsyscall table for legacy applications"
+	depends on X86_64
+	default LEGACY_VSYSCALL_EMULATE
+	help
+	  Legacy user code that does not know how to find the vDSO expects
+	  to be able to issue three syscalls by calling fixed addresses in
+	  kernel space. Since this location is not randomized with ASLR,
+	  it can be used to assist security vulnerability exploitation.
+
+	  This setting can be changed at boot time via the kernel command
+	  line parameter vsyscall=[native|emulate|none].
+
+	  On a system with recent enough glibc (2.14 or newer) and no
+	  static binaries, you can say None without a performance penalty
+	  to improve security.
+
+	  If unsure, select "Emulate".
+
+	config LEGACY_VSYSCALL_NATIVE
+		bool "Native"
+		help
+		  Actual executable code is located in the fixed vsyscall
+		  address mapping, implementing time() efficiently. Since
+		  this makes the mapping executable, it can be used during
+		  security vulnerability exploitation (traditionally as
+		  ROP gadgets). This configuration is not recommended.
+
+	config LEGACY_VSYSCALL_EMULATE
+		bool "Emulate"
+		help
+		  The kernel traps and emulates calls into the fixed
+		  vsyscall address mapping. This makes the mapping
+		  non-executable, but it still contains known contents,
+		  which could be used in certain rare security vulnerability
+		  exploits. This configuration is recommended when userspace
+		  still uses the vsyscall area.
+
+	config LEGACY_VSYSCALL_NONE
+		bool "None"
+		help
+		  There will be no vsyscall mapping at all. This will
+		  eliminate any risk of ASLR bypass due to the vsyscall
+		  fixed address mapping. Attempts to use the vsyscalls
+		  will be reported to dmesg, so that either old or
+		  malicious userspace programs can be identified.
+
+endchoice
 
 config CMDLINE_BOOL
 	bool "Built-in kernel command line"

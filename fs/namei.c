@@ -955,26 +955,23 @@ static bool safe_hardlink_source(struct inode *inode)
  *  - sysctl_protected_hardlinks enabled
  *  - fsuid does not match inode
  *  - hardlink source is unsafe (see safe_hardlink_source() above)
- *  - not CAP_FOWNER
+ *  - not CAP_FOWNER in a namespace with the inode owner uid mapped
  *
  * Returns 0 if successful, -ve on error.
  */
 static int may_linkat(struct path *link)
 {
-	const struct cred *cred;
 	struct inode *inode;
 
 	if (!sysctl_protected_hardlinks)
 		return 0;
 
-	cred = current_cred();
 	inode = link->dentry->d_inode;
 
 	/* Source inode owner (or CAP_FOWNER) can hardlink all they like,
 	 * otherwise, it must be a safe source.
 	 */
-	if (uid_eq(cred->fsuid, inode->i_uid) || safe_hardlink_source(inode) ||
-	    capable(CAP_FOWNER))
+	if (inode_owner_or_capable(inode) || safe_hardlink_source(inode))
 		return 0;
 
 	audit_log_link_denied("linkat", link);
@@ -1714,6 +1711,11 @@ static inline int should_follow_link(struct nameidata *nd, struct path *link,
 		return 0;
 	if (!follow)
 		return 0;
+	/* make sure that d_is_symlink above matches inode */
+	if (nd->flags & LOOKUP_RCU) {
+		if (read_seqcount_retry(&link->dentry->d_seq, seq))
+			return -ECHILD;
+	}
 	return pick_link(nd, link, inode, seq);
 }
 
@@ -1745,11 +1747,11 @@ static int walk_component(struct nameidata *nd, int flags)
 		if (err < 0)
 			return err;
 
-		inode = d_backing_inode(path.dentry);
 		seq = 0;	/* we are already out of RCU mode */
 		err = -ENOENT;
 		if (d_is_negative(path.dentry))
 			goto out_path_put;
+		inode = d_backing_inode(path.dentry);
 	}
 
 	if (flags & WALK_PUT)
@@ -1969,7 +1971,7 @@ OK:
 		if (err) {
 			const char *s = get_link(nd);
 
-			if (unlikely(IS_ERR(s)))
+			if (IS_ERR(s))
 				return PTR_ERR(s);
 			err = 0;
 			if (unlikely(!s)) {
@@ -1999,7 +2001,6 @@ static const char *path_init(struct nameidata *nd, unsigned flags)
 	nd->last_type = LAST_ROOT; /* if there are only slashes... */
 	nd->flags = flags | LOOKUP_JUMPED | LOOKUP_PARENT;
 	nd->depth = 0;
-	nd->total_link_count = 0;
 	if (flags & LOOKUP_ROOT) {
 		struct dentry *root = nd->root.dentry;
 		struct inode *inode = root->d_inode;
@@ -2905,22 +2906,10 @@ no_open:
 		dentry = lookup_real(dir, dentry, nd->flags);
 		if (IS_ERR(dentry))
 			return PTR_ERR(dentry);
-
-		if (create_error) {
-			int open_flag = op->open_flag;
-
-			error = create_error;
-			if ((open_flag & O_EXCL)) {
-				if (!dentry->d_inode)
-					goto out;
-			} else if (!dentry->d_inode) {
-				goto out;
-			} else if ((open_flag & O_TRUNC) &&
-				   d_is_reg(dentry)) {
-				goto out;
-			}
-			/* will fail later, go on to get the right error */
-		}
+	}
+	if (create_error && !dentry->d_inode) {
+		error = create_error;
+		goto out;
 	}
 looked_up:
 	path->dentry = dentry;
@@ -3134,12 +3123,12 @@ retry_lookup:
 		return error;
 
 	BUG_ON(nd->flags & LOOKUP_RCU);
-	inode = d_backing_inode(path.dentry);
 	seq = 0;	/* out of RCU mode, so the value doesn't matter */
 	if (unlikely(d_is_negative(path.dentry))) {
 		path_to_nameidata(&path, nd);
 		return -ENOENT;
 	}
+	inode = d_backing_inode(path.dentry);
 finish_lookup:
 	if (nd->depth)
 		put_link(nd);
@@ -3147,11 +3136,6 @@ finish_lookup:
 				   inode, seq);
 	if (unlikely(error))
 		return error;
-
-	if (unlikely(d_is_symlink(path.dentry)) && !(open_flag & O_PATH)) {
-		path_to_nameidata(&path, nd);
-		return -ELOOP;
-	}
 
 	if ((nd->flags & LOOKUP_RCU) || nd->path.mnt != path.mnt) {
 		path_to_nameidata(&path, nd);
@@ -3171,6 +3155,10 @@ finish_open:
 		return error;
 	}
 	audit_inode(nd->name, nd->path.dentry, 0);
+	if (unlikely(d_is_symlink(nd->path.dentry)) && !(open_flag & O_PATH)) {
+		error = -ELOOP;
+		goto out;
+	}
 	error = -EISDIR;
 	if ((open_flag & O_CREAT) && d_is_dir(nd->path.dentry))
 		goto out;
@@ -3214,6 +3202,10 @@ opened:
 			goto exit_fput;
 	}
 out:
+	if (unlikely(error > 0)) {
+		WARN_ON(1);
+		error = -EINVAL;
+	}
 	if (got_write)
 		mnt_drop_write(nd->path.mnt);
 	path_put(&save_parent);
@@ -3383,7 +3375,7 @@ struct file *do_file_open_root(struct dentry *dentry, struct vfsmount *mnt,
 		return ERR_PTR(-ELOOP);
 
 	filename = getname_kernel(name);
-	if (unlikely(IS_ERR(filename)))
+	if (IS_ERR(filename))
 		return ERR_CAST(filename);
 
 	set_nameidata(&nd, -1, filename);
@@ -4191,7 +4183,11 @@ int vfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	bool new_is_dir = false;
 	unsigned max_links = new_dir->i_sb->s_max_links;
 
-	if (source == target)
+	/*
+	 * Check source == target.
+	 * On overlayfs need to look at underlying inodes.
+	 */
+	if (vfs_select_inode(old_dentry, 0) == vfs_select_inode(new_dentry, 0))
 		return 0;
 
 	error = may_delete(old_dir, old_dentry, is_dir);
@@ -4607,7 +4603,7 @@ EXPORT_SYMBOL(__page_symlink);
 int page_symlink(struct inode *inode, const char *symname, int len)
 {
 	return __page_symlink(inode, symname, len,
-			!(mapping_gfp_mask(inode->i_mapping) & __GFP_FS));
+			!mapping_gfp_constraint(inode->i_mapping, __GFP_FS));
 }
 EXPORT_SYMBOL(page_symlink);
 

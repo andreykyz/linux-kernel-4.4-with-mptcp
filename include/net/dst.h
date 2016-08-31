@@ -322,6 +322,39 @@ static inline void skb_dst_force(struct sk_buff *skb)
 	}
 }
 
+/**
+ * dst_hold_safe - Take a reference on a dst if possible
+ * @dst: pointer to dst entry
+ *
+ * This helper returns false if it could not safely
+ * take a reference on a dst.
+ */
+static inline bool dst_hold_safe(struct dst_entry *dst)
+{
+	if (dst->flags & DST_NOCACHE)
+		return atomic_inc_not_zero(&dst->__refcnt);
+	dst_hold(dst);
+	return true;
+}
+
+/**
+ * skb_dst_force_safe - makes sure skb dst is refcounted
+ * @skb: buffer
+ *
+ * If dst is not yet refcounted and not destroyed, grab a ref on it.
+ */
+static inline void skb_dst_force_safe(struct sk_buff *skb)
+{
+	if (skb_dst_is_noref(skb)) {
+		struct dst_entry *dst = skb_dst(skb);
+
+		if (!dst_hold_safe(dst))
+			dst = NULL;
+
+		skb->_skb_refdst = (unsigned long)dst;
+	}
+}
+
 
 /**
  *	__skb_tunnel_rx - prepare skb for rx reinsert
@@ -454,13 +487,13 @@ static inline void dst_set_expires(struct dst_entry *dst, int timeout)
 }
 
 /* Output packet to network from transport.  */
-static inline int dst_output_sk(struct sock *sk, struct sk_buff *skb)
+static inline int dst_output(struct sock *sk, struct sk_buff *skb)
 {
 	return skb_dst(skb)->output(sk, skb);
 }
-static inline int dst_output(struct sk_buff *skb)
+static inline int dst_output_okfn(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
-	return dst_output_sk(skb->sk, skb);
+	return dst_output(sk, skb);
 }
 
 /* Input packet from network to transport.  */

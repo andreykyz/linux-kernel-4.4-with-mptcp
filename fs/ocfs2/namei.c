@@ -106,8 +106,6 @@ static int ocfs2_double_lock(struct ocfs2_super *osb,
 static void ocfs2_double_unlock(struct inode *inode1, struct inode *inode2);
 /* An orphan dir name is an 8 byte value, printed as a hex string */
 #define OCFS2_ORPHAN_NAMELEN ((int)(2 * sizeof(u64)))
-#define OCFS2_DIO_ORPHAN_PREFIX "dio-"
-#define OCFS2_DIO_ORPHAN_PREFIX_LEN 4
 
 static struct dentry *ocfs2_lookup(struct inode *dir, struct dentry *dentry,
 				   unsigned int flags)
@@ -261,7 +259,6 @@ static int ocfs2_mknod(struct inode *dir,
 	struct ocfs2_dir_lookup_result lookup = { NULL, };
 	sigset_t oldset;
 	int did_block_signals = 0;
-	struct posix_acl *default_acl = NULL, *acl = NULL;
 	struct ocfs2_dentry_lock *dl = NULL;
 
 	trace_ocfs2_mknod(dir, dentry, dentry->d_name.len, dentry->d_name.name,
@@ -369,12 +366,6 @@ static int ocfs2_mknod(struct inode *dir,
 		goto leave;
 	}
 
-	status = posix_acl_create(dir, &mode, &default_acl, &acl);
-	if (status) {
-		mlog_errno(status);
-		goto leave;
-	}
-
 	handle = ocfs2_start_trans(osb, ocfs2_mknod_credits(osb->sb,
 							    S_ISDIR(mode),
 							    xattr_credits));
@@ -423,16 +414,8 @@ static int ocfs2_mknod(struct inode *dir,
 		inc_nlink(dir);
 	}
 
-	if (default_acl) {
-		status = ocfs2_set_acl(handle, inode, new_fe_bh,
-				       ACL_TYPE_DEFAULT, default_acl,
-				       meta_ac, data_ac);
-	}
-	if (!status && acl) {
-		status = ocfs2_set_acl(handle, inode, new_fe_bh,
-				       ACL_TYPE_ACCESS, acl,
-				       meta_ac, data_ac);
-	}
+	status = ocfs2_init_acl(handle, inode, dir, new_fe_bh, parent_fe_bh,
+			 meta_ac, data_ac);
 
 	if (status < 0) {
 		mlog_errno(status);
@@ -474,10 +457,6 @@ static int ocfs2_mknod(struct inode *dir,
 	d_instantiate(dentry, inode);
 	status = 0;
 leave:
-	if (default_acl)
-		posix_acl_release(default_acl);
-	if (acl)
-		posix_acl_release(acl);
 	if (status < 0 && did_quota_inode)
 		dquot_free_inode(inode);
 	if (handle)
@@ -657,9 +636,18 @@ static int ocfs2_mknod_locked(struct ocfs2_super *osb,
 		return status;
 	}
 
-	return __ocfs2_mknod_locked(dir, inode, dev, new_fe_bh,
+	status = __ocfs2_mknod_locked(dir, inode, dev, new_fe_bh,
 				    parent_fe_bh, handle, inode_ac,
 				    fe_blkno, suballoc_loc, suballoc_bit);
+	if (status < 0) {
+		u64 bg_blkno = ocfs2_which_suballoc_group(fe_blkno, suballoc_bit);
+		int tmp = ocfs2_free_suballoc_bits(handle, inode_ac->ac_inode,
+				inode_ac->ac_bh, suballoc_bit, bg_blkno, 1);
+		if (tmp)
+			mlog_errno(tmp);
+	}
+
+	return status;
 }
 
 static int ocfs2_mkdir(struct inode *dir,
